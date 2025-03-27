@@ -1,0 +1,689 @@
+---
+title: "SI compartmental model with imperfect vaccination"
+author: "hermina ghenu"
+date: "2025-03-26"
+output: html_document
+runtime: shiny
+---
+
+# Goal
+
+I am building the model presented in [Kribs-Zaleta & Velasco-Hernández 2000](https://www.sciencedirect.com/science/article/pii/S0025556400000031). I used the infectious_diseases from [the EcoEvoApps project](https://gitlab.com/ecoevoapps/ecoevoapps) as my starting point.
+
+My goal is to start playing around with an R Shiny app of a compartmental model in order to design a coherent tutorial that can help students learn. In particular, I want to see if it's possible to teach students how to make their own extensions to an existing model.
+
+```{r setup, include=FALSE}
+
+knitr::opts_chunk$set(echo = TRUE)
+
+library(ggplot2)
+library(tidyr)
+library(purrr)
+library(dplyr)
+library(deSolve)
+library(patchwork)
+library(kableExtra)
+library(shiny)
+library(ecoevoapps) # now only used for 
+theme_set(ecoevoapps::theme_apps())
+```
+
+
+# Description of the Biological Problem / Question
+
+# Explanation of the Model
+
+## Model Assumptions
+
+[Insert text here]
+
+## Define variables & parameters
+
+Variables:
+
+```{r vars SVI, echo=F}
+# different columns of the table
+vars <- c("$S$",
+          "$I$",
+          "$V$",
+          "$T$")
+vars_desc <- c("Population fraction of susceptible individuals",
+               "Population fraction of infectious individuals",
+               "Population fraction of vaccinated individuals",
+               "Time"
+                 )
+vars_units <- c("none (susceptible individuals / total individuals)",
+                "none (infected individuals / total individuals)",
+                "none (vaccinated individuals / total individuals)",
+                "days, weeks, years, etc.")
+
+# combine columns and render the table nicely
+var_df <- data.frame(vars, vars_desc, vars_units)
+kable(x = var_df, format = "html", 
+      col.names = c("Variable", "Description", "Example unit")) %>%
+  kable_styling(full_width = FALSE, 
+                bootstrap_options = c("striped", "hover", "condensed"),
+                position = "center")
+# clean up
+rm(vars, vars_desc, vars_units, var_df)
+```  
+
+Parameters:
+
+```{r pars SVI, echo=F}
+# different columns of the table
+pars      <- c("$\\beta$", 
+               "$\\gamma$ (c in 2000 paper)",
+               "$\\theta$",
+               "$\\sigma$",
+               "$\\phi$")
+pars_desc <- c("Transmission rate",
+               "Recovery rate",
+               "Vaccine waning rate",
+               "Modifier of trasmission rate thanks to vaccination",
+               "Vaccination rate"
+                 )
+min_max <- c("[0, +Inf)",
+             "[0, +Inf)",
+             "[0, +Inf)",
+             "[0, 1]",
+             "[0, +Inf)")
+
+# combine columns and render the table nicely
+param_df <- data.frame(pars, pars_desc, min_max)
+kable(x = param_df, format = "html", 
+      col.names = c("Parameter", "Description", "Range")) %>%
+  kable_styling(full_width = FALSE, 
+                bootstrap_options = c("striped", "hover", "condensed"),
+                position = "center")
+# clean up
+rm(pars, pars_desc, min_max, param_df)
+```  
+
+
+## Qualitative description
+
+Let's create another version of this plot that is native to ggplot. This way it can later become an interactive part of the shiny app:
+
+```{r schematic_diag, echo=FALSE}
+# a function to define the corners of the 3 rectangles
+make_rectangles <- function(S_scale=1, # looks good: min 0.1 and max 3
+                            I_scale=1, # looks good: min 0.1 and max 3
+                            V_scale=1, # looks good: min 0.1 and max 3
+                            b_scale=0.5, # transmission (S -> I): min 0.1, max 2.2
+                            c_scale=0.5, # recovery (I -> S): min 0.1, max 2.2
+                            p_scale=0.5, # vaccination policy (S -> V): min 0.1, max 2.2
+                            w_scale=0.5, # vaccination waning (V -> S): min 0.1, max 2.2
+                            m_scale=0.5 # modifier of transmission rate (V -> I): min 0.1, max 2.2
+                            ){
+  # check if vaccination is enabled
+  vaccine <- (V_scale | p_scale) # at least one must be non-zero
+  
+  # define the standard ratio of the basic rectangle
+  rect_HALFlength <- 1.7/2
+  rect_HALFheight <- 0.4/2
+  # define the fixed center point of each rectangle
+  S_center <- c(x=0.85, y=2.8)
+  I_center <- c(x=4.15, y=2.8)
+  V_center <- c(x=2.15, y=1.7)
+  
+  # update the size of each rectangle based on its scale
+  S_len <- S_scale * rect_HALFlength
+  S_hei <- S_scale * rect_HALFheight
+  I_len <- I_scale * rect_HALFlength
+  I_hei <- I_scale * rect_HALFheight
+  V_len <- V_scale * rect_HALFlength
+  V_hei <- V_scale * rect_HALFheight
+  
+  # Create a data.frame to define the rectangles and text
+  rect_coords <- data.frame(
+    x_center = c(S_center["x"], I_center["x"]),
+    y_center = c(S_center["y"], I_center["y"]),
+    left = c(S_center["x"]-S_len, I_center["x"]-I_len),
+    right = c(S_center["x"]+S_len, I_center["x"]+I_len),
+    bottom = c(S_center["y"]-S_hei, I_center["y"]-I_hei),
+    top = c(S_center["y"]+S_hei, I_center["y"]+I_hei)
+  )
+  # name the rows by the compartment
+  row.names(rect_coords) = c("Susceptible", "Infected")
+  # a named vector for the colours of the compartment rectangles
+  rect_colours <- c(Susceptible = "#440154FF", Infected = "#FDE725FF")
+  
+  # if vaccination is enabled, add the third "vaccinated" rectangle
+  if (vaccine) {
+    rect_coords <- rbind(rect_coords,
+                         c(V_center["x"], V_center["y"],
+                           V_center["x"]-V_len, V_center["x"]+V_len,
+                           V_center["y"]-V_hei, V_center["y"]+V_hei))
+    row.names(rect_coords)[3] <- "Vaccinated"
+    rect_colours <- c(rect_colours, Vaccinated =  "#21908CFF")
+  }
+  
+  # begin making the plot. Put the rectangles on the lowest layer
+  output <- ggplot() +
+            # Add rectangles
+            geom_rect(data = rect_coords,
+                      aes(xmin = left, xmax = right, ymin = bottom, ymax = top), 
+                      fill = rect_colours, color = "black", alpha=0.6) +
+            # Add text labels
+            geom_text(data = rect_coords,
+                      aes(x = x_center, y = y_center, label = row.names(rect_coords)), 
+                      size = 5)
+  
+  # if transmission > 0, add the transmission rate arrow
+  if (b_scale > 0){
+    output <- output +
+            # plot the transmission arrow
+              geom_curve(aes(x = rect_coords["Susceptible", "x_center"]+0.8,
+                             xend = rect_coords["Infected", "x_center"]-0.5,
+                             y = rect_coords["Susceptible", "y_center"]+0.05,
+                             yend = rect_coords["Infected", "y_center"]+0.05),
+                         curvature = -0.5, lineend = "butt",
+                         arrow = arrow(length = unit(0.04, "npc")),
+              # weight of arrow depends on b parameter
+                         linewidth=b_scale) +
+            # add transmission label
+              geom_text(aes(x = 0.05 + rect_coords["Susceptible", "x_center"] + (rect_coords["Infected", "x_center"] - rect_coords["Susceptible", "x_center"])/2,
+                            y = rect_coords["Susceptible", "y_center"]+0.4,
+                        label = "b"),
+                        size = 5)
+  }
+  
+  # if recovery > 0, add the recovery rate arrow
+  if (c_scale > 0) {
+    output <- output +
+            # the recovery arrow
+              geom_curve(aes(xend = rect_coords["Susceptible", "x_center"]+0.75,
+                             x = rect_coords["Infected", "x_center"]-0.55,
+                             yend = rect_coords["Susceptible", "y_center"]-0.05,
+                             y = rect_coords["Infected", "y_center"]-0.05),
+                         curvature = -0.5, lineend = "butt",
+                         arrow = arrow(length = unit(0.04, "npc")),
+              # weight of arrow depends on c parameter
+                         linewidth=c_scale) +
+            # add recovery label
+              geom_text(aes(x = 0.05 + rect_coords["Susceptible", "x_center"] + (rect_coords["Infected", "x_center"] - rect_coords["Susceptible", "x_center"])/2,
+                            y = rect_coords["Susceptible", "y_center"]-0.38,
+                        label = "c"),
+                        size = 5)
+  }
+  
+  # if vaccination policy > 0, add the vaccination rate arrow
+  if (p_scale > 0){
+    output <- output +
+            # define the vaccination rate arrow
+              geom_curve(aes(x = rect_coords["Susceptible", "x_center"]+0.15,
+                             xend = rect_coords["Vaccinated", "x_center"]-0.5,
+                             y = rect_coords["Susceptible", "y_center"]-0.11,
+                             yend = rect_coords["Vaccinated", "y_center"]+0.07),
+                         curvature = -0.25, lineend = "butt",
+                         arrow = arrow(length = unit(0.04, "npc")),
+            # weight of arrow depends on p parameter
+                         linewidth=p_scale) +
+            # add vaccination rate label
+              geom_text(aes(x=1.75, y=2.3, label = "p"), size = 5)
+  }
+  
+  # if vaccine can wane, add the waning rate arrow
+  if (vaccine & (w_scale > 0)) { # to prevent extraneous arrows or labels, need to check that vaccine is also TRUE
+    output <- output +
+            # define the waning rate arrow
+              geom_curve(aes(xend = rect_coords["Susceptible", "x_center"]-0.05,
+                             x = rect_coords["Vaccinated", "x_center"]-0.7,
+                             yend = rect_coords["Susceptible", "y_center"]-0.11,
+                             y = rect_coords["Vaccinated", "y_center"]+0.07),
+                         curvature = -0.25, lineend = "butt",
+                         arrow = arrow(length = unit(0.04, "npc")),
+            # weight of arrow depends on w parameter
+                         linewidth=w_scale) +
+            # add vaccination rate label
+              geom_text(aes(x=0.6, y=2.3, label = "w"), size = 5)
+  }
+  
+  #if vaccine is not perfectly effective, add modified transmission arrows
+  if (vaccine & (m_scale > 0)){ # to prevent extraneous arrows or labels, need to check that vaccine is also TRUE
+    output <- output +
+          # finally define the vaccine-modified transmission rate arrow
+              geom_curve(aes(x = rect_coords["Vaccinated", "x_center"]+0.7,
+                             xend = rect_coords["Infected", "x_center"]-0.05,
+                             y = rect_coords["Vaccinated", "y_center"],
+                             yend = rect_coords["Susceptible", "y_center"]-0.11),
+                         curvature = 0.4, lineend = "butt",
+                         arrow = arrow(length = unit(0.04, "npc")),
+              # weight of arrow depends on m*b parameters
+                         linewidth=m_scale) +
+              # add vaccination rate label
+              geom_text(aes(x=4.27, y=2.05, label = "m*b"), size = 5)
+  }
+  
+  # finally, set limits and theme
+  if (vaccine) {
+    output <- output +
+              xlim(min(rect_coords$left), max(rect_coords$right)) +
+              ylim(min(rect_coords$bottom), max(c(rect_coords$top, 3.2))) +
+              theme_void()
+  } else {
+    output <- output +
+              xlim(min(rect_coords$left), max(rect_coords$right)) +
+              ylim(min(rect_coords$bottom, 2), max(c(rect_coords$top, 3.5))) + # y axis has to be artificially forced to be bigger than min/max values otherwise the boxes and arrows can look weird
+              theme_void()
+  }
+  
+  return(output)
+}
+
+# plot the schematic
+print(make_rectangles())
+
+# plot again without vaccinated
+#print(make_rectangles(S_scale=1, I_scale=1, V_scale=0, p_scale=0))
+```
+
+## Quantitative description
+
+Description of the model modified from pg. 212-3 [Blackwood & Childs 2018](https://lettersinbiomath.org/manuscript/index.php/lib/article/view/77):
+
+Assuming that the fraction of individuals in the susceptible class is given by S, vaccinated class is given by V, and infectious class is given by I
+
+\[
+\begin{align}
+\frac{dS}{dt} &= \theta V + \gamma I - \beta I S - \phi S,\\
+\frac{dI}{dt} &= \beta I S + \sigma\beta I V - \gamma I,
+\frac{dV}{dt} &= \phi S - \sigma\beta I V - \theta V,\\
+\end{align}
+\]
+
+where the total population size $N=S+V+I=1$, $\lambda(I)=\beta(I/N)=\beta I$ is the force of infection to the susceptible class, $\lambda_V (I)=\sigma\beta(I/N)=\sigma\beta I$ is the force of infection to the vaccinated class, $\beta$ is the transmission rate, $\theta$ is the vaccine waning rate, $\sigma$ is a modifier of the transmission rate such that vaccinated individuals produce fewer infections ($\sigma<1$) than susceptible individuals, $\gamma$ is the recovery rate, and $\phi$ is the vaccination rate. There are no births or deaths in this population: this is sometimes a reasonable assumption. When the rate of waning of immunity from the vaccine exceeds that of the recovery rate, it is possible to have a stable endemic equilibrium while $R_0 < 1$.
+
+Show a bit of the code so that students can get an idea of what it looks like:
+
+```{r SVI_model_show}
+# define the SVI model
+#' SVI model with vital rates
+#' @param time vector of time units over which to run model
+#' @param init initial population size of population
+#' @param params vector of mu (natural birth and death rate),
+#' beta (transmission rate), gamma (recovery rate), theta (vaccine waning
+#' rate), sigma (ability of vaccinated to produce new infections),
+#' and phi (vaccination rate).
+#' @keywords internal
+SVI <- function(time,init,params) {
+  with (as.list(c(time,init,params)), {
+    # description of parameters:
+    # mu (natural birth and death rate)
+    # beta (transmission rate)
+    # gamma (recovery rate)
+    # theta (vaccine waning rate)
+    # sigma (ability of vaccinated to produce new infections)
+    # phi (vaccination rate)
+    dS_dt = mu*(S + V + I) + theta*V + gamma*I - (beta*I/(S + V + I))*S - (mu + phi)*S
+    dV_dt = phi*S - (sigma*beta*I/(S + V + I))*V - (mu + theta)*V
+    dI_dt = (beta*I/(S + V + I))*S + (sigma*beta*I/(S + V + I))*V - (mu + gamma)*I
+    return(list(c(dS = dS_dt, dV = dV_dt, dI = dI_dt)))
+  })
+}
+```
+
+```{r SVI_model_hide, echo=FALSE}
+# a function to run forward time simulations of the SVI model
+run_SVI_model <- function(time, init, params) {
+  # first check the analytical results from the paper
+  soln <- get_bifurcation(init = init, params = params)
+  # check for fully neutral system
+  if (soln$behav == "neutral equilibrium: system stays the same as initial.") {
+    # it's trivial to simulate the neutral dynamics:
+    data.frame(time = time, S = unname(init["S"]), V = unname(init["V"]), I = unname(init["I"]))
+  } else {
+    # solve the system of ODE's for the requested time points:
+    data.frame(ode(func = SVI, y = init, parms = params, times = time, method="ode23"))
+  }
+  # ode23 is better than others (adams is the next best but definitely worse)
+  # these both still have some issues at params = c(b=3.82, c=1, w=0, m=0.04, p=0.196) and init = c(S=0.9, V=0, I=0.1). This problem is specifically when w=0 then the I category disappears after ~ 50 time units (but it should be a flat line at 0)
+  # another issue is when there's no movement into the vaccinated compartment but there is movement out of it, especially once the movement out of that compartment gets fairly quick. For example: params = c(b=2.27, c=0.79, w=1.46, m=0.48, p=0) and init = c(S=0.8, V=0.1, I=0.1)
+  # (ode23 could be faster ... but it's not as bad as ode45, which times out for large b)
+  # euler and rk4 are just awful
+}
+
+#' Plot solutions forward in time for SVI model
+#' @param sim_df simulated data frame generated from run_SVI_model()
+#' @import ggplot2
+#' @seealso [plot_infectiousdisease_time()] this code is based off of that
+#' @examples
+#' # Run SVI model
+#' params_vec <- c(mu = 0.01, beta = 3.27, gamma = 0.5, theta = 0.01,
+#'                 sigma = 0.02, phi = 100)
+#' params_vec2 <- c(mu = 0.01, beta = 4, gamma = 0.1, theta = 0.01,
+#'                 sigma = 0.2, phi = 100)
+#' init_vec <- c(S = 1 - 10^-4, V = 0, I = 10^-4)
+#' time_vec <- seq(0, 100, 0.1)
+#' svi_out <- run_SVI_model(time = time_vec, init = init_vec, params = params_vec)
+#' plot_SVI_time(svi_out, params = params_vec)
+#' @export
+plot_SVI_time <- function(sim_df, params, title_text=NA) {
+
+  # To suppress CMD Check
+  R <- S <- E <- D <- time <- Group <- value <- NULL
+  
+  # check if vaccination is enabled
+  vaccine <- (sim_df$V[1] | params["phi"]) # at least one must be non-zero
+  
+  # change the data.frame from wide format to long format for plotting
+  sim_df_long <- sim_df %>% rename(Susceptible = S, Vaccinated = V, Infected = I) %>%
+                  pivot_longer(cols = !time, names_to = "Group") %>%
+                    mutate(Group = factor(Group, levels = c("Susceptible", "Vaccinated", "Infected")))
+  
+  # if vaccinated compartment is fixed at zero for all 
+  if (!vaccine) {
+    # remove the redundant 0's
+    sim_df_long <- sim_df_long %>% filter(Group != "Vaccinated")
+    sim_df_long$Group <- droplevels(sim_df_long$Group)
+  }
+  
+  #plot for finite time
+  finite_plot <- ggplot(sim_df_long) +
+                  # this could be a crappy way to deal with numerical problems...
+                  #geom_smooth(aes(x = time, y = value, colour = Group),
+                   #           method = "loess", se=FALSE, linewidth = 2, alpha = 0.8) +              
+                  geom_line(aes(x = time, y = value, color = Group), linewidth = 2, alpha=0.8) +
+                  scale_colour_viridis_d() +
+                  ylab("Population fraction") +
+                  scale_y_continuous(limits = c(0,1), expand = c(0, 0)) + # important to set expand to 0,0 otherwise there's extra padding that makes it look like things aren't going to 0 or 1
+    # the problem is that sometimes the lines disappear bc they are beyond the grid range
+                  theme_apps() + theme(text = element_text(size=18), legend.position="none")
+  
+  # get the state of the system as time -> +Inf by using the analytic results from the paper
+  soln <- get_bifurcation(init = unlist(sim_df[1,-1]), params = params)
+  
+  # data for infinite time
+  inf_df <- data.frame(Group = factor(c("Susceptible", "Vaccinated", "Infected"),
+                                      levels = c("Susceptible", "Vaccinated", "Infected")),
+                       Value = c(soln$S_star, soln$V_star, soln$I_star))
+  
+  # if vaccinated compartment is fixed at zero for all 
+  if (!vaccine) {
+    # remove the redundant 0's
+    inf_df <- inf_df %>% filter(Group != "Vaccinated")
+    inf_df$Group <- droplevels(inf_df$Group)
+  }
+  
+  # plot for infinite time
+  inf_plot <- ggplot() +
+                geom_hline(data = inf_df, aes(yintercept = Value, color = Group),
+                           linewidth = 2, alpha = 0.8) +
+                scale_x_continuous(limits=c(0.5,1.5), breaks = c(1), labels = "Inf") +
+                scale_colour_viridis_d() +
+                scale_y_continuous(limits = c(0,1), expand = c(0, 0)) +
+                theme_apps() + theme(text = element_text(size=18),
+                                     axis.line.y=element_blank(),
+                                     axis.text.y=element_blank(),
+                                     axis.title.y=element_blank())
+  
+  # if specified by user,
+  if (!is.na(title_text)){
+    # add a title to the main plot
+    finite_plot <- finite_plot + labs(title = title_text) +
+                    theme(plot.title = element_text(size = 18, face = "bold"))
+  }
+  
+  # put the 2 plots together
+  return(wrap_plots(finite_plot, inf_plot, ncol = 2, widths = c(7,1)))
+}
+
+# it would be nice to have a function that plots the bifurcation diagram
+# plot the bifurcation diagram: R_0 on the x-axis and I^* on the y-axis
+# plot_bifurcation <- function(init, params){
+# ...
+#}
+
+# in lieu of that, here's a function that tells you the final state of the system
+get_bifurcation <- function(init, params){
+  # extract the parameters for clarity
+  mu <- params["mu"]
+  beta <- params["beta"]
+  gamma <- params["gamma"]
+  theta <- params["theta"]
+  sigma <- params["sigma"]
+  phi <- params["phi"]
+  
+  # calculate R_0 and R(\phi) as given on pg 188 of Kribs-Zaleta & Velasco-Hernández 2000  
+    # R_0 is the reproductive number in the absence of vaccination
+  R0 <- (beta / (mu + gamma))
+  R0 <- unname(R0)
+  
+  # R(\phi) is R_0 in the presence of vaccination, AKA the vaccine reproduction number
+  R0_phi <- R0 * ((mu + theta + sigma*phi) / (mu + theta + phi))
+  R0_phi <- unname(R0_phi)
+  
+  # summarize model outcome by examining inequalities (see pg 192)
+  inequality1 <- (mu + theta + sigma*phi)^2 < (mu + gamma) * sigma * (1 - sigma) * phi
+  inequality2 <- (mu + gamma - ((mu + theta + sigma*phi)/(sigma)) + (2/sigma)*sqrt((mu + gamma)*sigma*(1-sigma)*phi)) < beta & beta < (mu + gamma)*((mu + theta + phi)/(mu + theta + sigma*phi))
+  
+  if (R0 < 1) {
+    behav <- "system always goes to disease-free equilibrium regardless of vaccination."
+    I_star <- 0
+    V_star <- ifelse(phi + theta > 0, # check for potential undefined values
+                     phi / (phi + theta),
+                     0)
+  } else if (is.nan(R0_phi)) { # when mu, theta, and phi are 0 then R0_phi is undefined
+    # this reduces to the SI model
+    if (R0 > 1) {
+      behav <- "system always goes to endemic disease equilibrium."
+      I_star <- 1 - (1 / R0)
+      V_star <- 0
+    } else { # if R0 is neither smaller nor larger than 1 then it must necessarily be equal to 1
+      behav <- "neutral equilibrium: system stays the same as initial."
+      I_star <- init["I"]
+      V_star <- init["V"]
+    }
+  } else if (R0_phi > 1) {
+    behav <- "system always goes to endemic disease equilibrium."
+    # see pg 189
+    I_star <- (1 - ((1/R0)*(1 + ((phi)/(mu + theta))))) * sum(init)
+    V_star <- ifelse(theta + theta + sigma*beta > 0, # check for potential undefined values
+                     (phi - phi*I_star) / (phi + theta + sigma*beta*I_star),
+                     0)
+  } else if (all(inequality1, inequality2)){
+    behav <- "disease-free & endemic equilibria are both locally stable: system depends on initial conditions."
+    I_star <- "it depends."
+    V_star <- "it depends."
+    S_star <- "it depends."
+  } else if (all(R0==1, R0_phi==1)) {
+    behav <- "neutral equilibrium: system stays the same as initial."
+    I_star <- init["I"]
+    V_star <- init["V"]
+  } else {
+    behav <- "system always goes to disease-free equilibrium as a result of vaccination."
+    I_star <- 0
+    V_star <- ifelse(phi + theta > 0, # check for potential undefined values
+                     phi / (phi + theta),
+                     0)
+  }
+  
+  I_star <- unname(I_star)
+  V_star <- unname(V_star)
+  if(!exists("S_star")) S_star <- 1 - I_star - V_star
+  
+  output <- list(R0 = R0, R0_phi = R0_phi, I0 = unname(init["I"]),
+              S_star = S_star, I_star = I_star, V_star = V_star, behav = behav)
+  return(output)
+}
+```
+
+
+# R Shiny App
+
+```{r SVI app, echo=FALSE}
+sidebarLayout(
+  sidebarPanel(
+    
+    ### Ask user for parameter values ----
+    
+    # mu (natural birth and death rate)
+    # beta (transmission rate)
+    # gamma (recovery rate)
+    # theta (vaccine waning rate)
+    # sigma (ability of vaccinated to produce new infections)
+    # phi (vaccination rate)
+
+    sliderInput("beta", label = "b (transmission rate):",
+                min = 0, max = 3, value = 2.27, step = 0.01), # slider preferences should NOT be hard coded here. Define them as global variables in this code block so can be used for making the rectangle schematic
+    
+    sliderInput("gamma", label = "c (recovery rate):",
+                min = 0, max = 3, value = .5, step = 0.01),
+    
+    sliderInput("theta", label = "w (vaccine waning rate):",
+                min = 0, max = 3, value = .01, step = 0.01),
+    
+    sliderInput("sigma", label = "m (vaccine-modified transmission):",
+                min = 0, max = 1, value = .02, step = 0.02),
+    
+    sliderInput("phi", label = "p (vaccination rate):",
+                min = 0, max = 0.5, value = 0.125, step = 0.001),
+    
+    ### Ask user for initial conditions ----
+    numericInput("S0", label = "Initial population size of S", 
+                 min = 0, value = 1 - 0.1),
+    numericInput("V0", label = "Initial population size of V",
+                 min = 0, value = 0),
+    numericInput("I0", label = "Initial population size of I", 
+                 min = 0, value = 0.1),
+    
+    ### Ask user for time to simulate ----
+    numericInput("time", label = "Time to simulate", min = 10, value = 100)
+  ),
+  
+  # Render plots -----------------
+  mainPanel(#renderPrint({get_bifurcation(init = init_user(), params = params())}),
+            renderPlot({plots_to_render_SVI()}, width = 600, height = 625),
+            renderPlot({time_rare_common()}, width = 600, height = 625))
+)
+
+
+# Run the simulation -------------------
+
+# Set the initial population sizes
+init_user <- reactive({c(S = input$S0, V = input$V0, I = input$I0)})
+init_rareI <- c(S = 1 - 10^-12, V = 0, I = 10^-12)
+init_commonI <- c(S = 10^-4, V = 0, I = 1 - 10^-4)
+
+# Set the parameter values
+params <- reactive({c(mu = 0,
+                      beta = input$beta, 
+                      gamma = input$gamma,
+                      theta = input$theta,
+                      sigma = input$sigma,
+                      phi = input$phi)})
+# Time over which to simulate model dynamics
+time <- reactive({seq(0, input$time, by = 0.5)})
+
+# Simulate model dynamics 
+out_userinit <- reactive({
+  data.frame(run_SVI_model(time = time(), params = params(), init = init_user()))
+  })
+
+out_rareI <- reactive({
+  data.frame(run_SVI_model(time = time(), params = params(), init = init_rareI))
+  })
+
+out_commonI <- reactive({
+  data.frame(run_SVI_model(time = time(), params = params(), init = init_commonI))
+  })
+
+# Make plots -------------------
+# Plot abundance through time ----------
+abund_plot_userinit <- reactive({
+  plot_SVI_time(sim_df = out_userinit(), params = params())
+})
+
+abund_plot_rare <- reactive({
+  plot_SVI_time(sim_df = out_rareI(), params = params(), title_text = "Infections are rare at time = 0:")
+})
+abund_plot_common <- reactive({
+  plot_SVI_time(sim_df = out_commonI(), params = params(), title_text = "Infections are common at time = 0:")
+})
+
+
+# reactive plot of the model schematic ---
+schematic_plot <- reactive({
+  make_rectangles(#S_scale = ifelse(input$S0 > 0, input$S0 * 3, 0.05),
+                  #I_scale = ifelse(input$I0 > 0, input$I0 * 3, 0.05),
+                  #V_scale = input$V0 * 3,
+          # remove the V rectangle only when there's NO vaccination and NO vaccinated at time=0
+                  V_scale = ifelse((input$V0 == 0) & (input$phi == 0), 0, 1),
+                  b_scale = ifelse(input$beta > 0, (input$beta/3)*2.1 + 0.1, 0),
+                  c_scale = ifelse(input$gamma > 0, (input$gamma/3)*2.1 + 0.1, 0),
+                  p_scale = ifelse(input$phi > 0, (input$phi/0.5)*2.1 + 0.1, 0),
+                  w_scale = ifelse(input$theta > 0, (input$theta/3)*2.1 + 0.1, 0),
+          # thickness of the m*b arrow depends on BOTH m and b together!
+                  m_scale = ifelse((input$sigma > 0) & (input$beta > 0),
+                                   (input$sigma*input$beta/3)*2.15 + 0.1,
+                                   0))
+})
+
+
+# print out the final plots ----
+
+plots_to_render_SVI <- reactive({
+  wrap_plots(schematic_plot(), 
+             abund_plot_userinit(), 
+             nrow = 2, ncol = 1, byrow = FALSE)
+})
+
+time_rare_common <- reactive({
+  wrap_plots(abund_plot_rare(), 
+             abund_plot_common(), 
+             nrow = 2, ncol = 1, byrow = FALSE)
+})
+```
+
+Some notes about how to display this:
+- the idea of the interactive schematic plot is interesting but the problem is that lambda is  the force of infection (i.e., it is $\lambda (I)$) so it will be a function of time
+- I have another idea of using jitter plot and gganimate to give an idea of how the population is changing over time --> this can express the idea of density and probability of encounter btw different comparments.
+
+
+Here are some useful parameter combinations that I found by playing around:
+
+```{r param_combos}
+# disease-free without vaccination
+par_dfe <- c(mu = 0, beta = 0.27, gamma = 0.5, theta = 0.01, sigma = 0.02, phi = 0)
+
+# disease-free as a result of vaccination effort
+par_vacc <- c(mu = 0.01, beta = 3.27, gamma = 0.5, theta = 0.01, sigma = 0.02, phi = 0.2)
+
+# hysteresis
+par_hyst <- c(mu = .01, beta = 3.27, gamma = 0.5, theta = 0.01, sigma = 0.02, phi = 0.125)
+
+# hysteresis WITHOUT birth&death (mu = 0)
+par_hyst_mu0 <- c(mu = 0, beta = 3.27, gamma = 0.306, theta = 0.01, sigma = 0.02, phi = 0.125)
+
+# I think this hysteresis WITHOUT birth&death (mu) and WITHOUT wanning (theta) ?
+test_this <- c(mu = 0, beta = 3.27, gamma = 0.5, theta = 0, sigma = 0.02, phi = 0.01)
+# actually, we don't care about this.
+# the whole point of why this model is cool is bc addition of the V compartment creates a time delay. ==> There's no way to permanently make individuals resistant to the infection. But it is possible to have a stable disease-free equilibrium bc, through vaccination, it's possible to create conditions where an infected individual is unlikely to encounter any susceptible individuals.
+# if we remove the waning, then we have effectively created a resistant (R) compartment in the model.
+```
+
+Here's some code for debugging
+
+```{r testings, echo=FALSE}
+test_init <- c(S=0.9, V=0, I=0.1)
+test_pars <- c(mu=0, beta=1.93, gamma=1.93, theta=0, sigma=0, phi=0)
+
+get_bifurcation(init = test_init, params = test_pars)
+test_sim <- data.frame(run_SVI_model(time = seq(1, 200, by=2), init = test_init, params = test_pars))
+plot_SVI_time(sim_df = test_sim, params = test_pars)
+
+init_rareI <- c(S = 1 - 10^-12, V = 0, I = 10^-12)
+get_bifurcation(init = init_rareI, params = test_pars)
+test_sim <- data.frame(run_SVI_model(time = seq(1, 200, by=2), init = init_rareI, params = test_pars))
+plot_SVI_time(sim_df = test_sim, params = test_pars)
+
+init_commonI <- c(S = 10^-4, V = 0, I = 1 - 10^-4)
+get_bifurcation(init = init_commonI, params = test_pars)
+test_sim <- data.frame(run_SVI_model(time = seq(1, 200, by=2), init = init_commonI, params = test_pars))
+plot_SVI_time(sim_df = test_sim, params = test_pars)
+```
+
+# Biological questions & answers to check user understanding
+
+One thing that I learned by playing around with the R Shiny is that it's possible to set m=0 and still have the same kinds of dynamics going on.
