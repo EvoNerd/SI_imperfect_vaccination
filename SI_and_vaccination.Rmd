@@ -538,11 +538,206 @@ get_bifurcation <- function(init, params){
 
 # R Shiny App
 
-```{r SVI app, echo=FALSE}
+Need to add the hysteresis preset.
+But first need to add the bifurcation result raw output.
+
+```{r SVI new_app, echo=FALSE}
+
+# Define UI
+ui <- fluidPage(
+  sidebarLayout(
+    sidebarPanel(
+      selectInput("preset", "Choose preset parameter combo:", 
+                  choices = list("SI disease-free" = "SI_DFE",
+                                 "SI neutral" = "SI_neutral",
+                                 "SI endemic" = "SI_endemic",
+                                 "SVI disease-free" = "SVI_DFE",
+                                 "SVI vacinated disease-free" = "SVI_vac_DFE",
+                                 "SVI neutral" = "SVI_neutral",
+                                 "SVI endemic perfect vac" = "SVI_sig0_endemic",
+                                 "SVI endemic imperfect vac" = "SVI_imperf_endemic",
+                                 "SVI hysteresis" = "SVI_hyst")),
+      sliderInput("beta", shiny::HTML("&beta;: Transmission rate"), 
+                  min = 0, max = 3, value = 2.27, step = 0.01),
+      sliderInput("gamma", shiny::HTML("&gamma;: Recovery rate"),
+                  min = 0, max = 3, value = .5, step = 0.01),
+      sliderInput("theta", shiny::HTML("&theta;: Vaccine waning rate"),
+                  min = 0, max = 3, value = .01, step = 0.01),
+      sliderInput("sigma", shiny::HTML("&sigma;: Modifier of transmission rate"),
+                  min = 0, max = 1, value = .02, step = 0.02),
+      sliderInput("phi", shiny::HTML("&phi;: Vaccination rate"),
+                  min = 0, max = 0.5, value = 0.125, step = 0.001),
+      sliderInput("I0", label = "Initial fraction of Infected (I)", 
+                  min = 0, max = 1, value = 0.1, step = 0.01),
+      numericInput("time", label = "Time to simulate", min = 10, value = 100)
+    ),
+    mainPanel(
+      plotOutput("plot_SVI"),
+      plotOutput("plot_time")
+    )
+  )
+)
+
+# Define server logic
+server <- function(input, output, session) {
+  
+  observeEvent(input$preset, {
+    if (input$preset == "SI_DFE") {
+      updateSliderInput(session, "beta", value = 0.7)
+      updateSliderInput(session, "gamma", value = 1.1)
+      updateSliderInput(session, "theta", value = 0)
+      updateSliderInput(session, "sigma", value = 0)
+      updateSliderInput(session, "phi", value = 0)
+    }
+    if (input$preset == "SI_neutral") {
+      updateSliderInput(session, "beta", value = 0.7)
+      updateSliderInput(session, "gamma", value = 0.7)
+      updateSliderInput(session, "theta", value = 0)
+      updateSliderInput(session, "sigma", value = 0)
+      updateSliderInput(session, "phi", value = 0)
+    }
+    if (input$preset == "SI_endemic") {
+      updateSliderInput(session, "beta", value = 1.1)
+      updateSliderInput(session, "gamma", value = 0.7)
+      updateSliderInput(session, "theta", value = 0)
+      updateSliderInput(session, "sigma", value = 0)
+      updateSliderInput(session, "phi", value = 0)
+    }
+    if (input$preset == "SVI_DFE") {
+      updateSliderInput(session, "beta", value = 0.7)
+      updateSliderInput(session, "gamma", value = 1.1)
+      updateSliderInput(session, "theta", value = 0.1)
+      updateSliderInput(session, "sigma", value = 0)
+      updateSliderInput(session, "phi", value = 0.08)
+    }
+    if (input$preset == "SVI_vac_DFE") {
+      updateSliderInput(session, "beta", value = 1.1)
+      updateSliderInput(session, "gamma", value = 0.7)
+      updateSliderInput(session, "theta", value = 0.1)
+      updateSliderInput(session, "sigma", value = 0)
+      updateSliderInput(session, "phi", value = 0.08)
+    }
+    if (input$preset == "SVI_neutral") {
+      updateSliderInput(session, "beta", value = 1.3)
+      updateSliderInput(session, "gamma", value = 1.3)
+      updateSliderInput(session, "theta", value = 0.1)
+      updateSliderInput(session, "sigma", value = 0)
+      updateSliderInput(session, "phi", value = 0.05)
+    }
+    if (input$preset == "SVI_sig0_endemic") {
+      updateSliderInput(session, "beta", value = 1.6)
+      updateSliderInput(session, "gamma", value = 0.7)
+      updateSliderInput(session, "theta", value = 0.1)
+      updateSliderInput(session, "sigma", value = 0)
+      updateSliderInput(session, "phi", value = 0.05)
+    }
+    if (input$preset == "SVI_imperf_endemic") {
+      updateSliderInput(session, "beta", value = 1.6)
+      updateSliderInput(session, "gamma", value = 0.7)
+      updateSliderInput(session, "theta", value = 0.18)
+      updateSliderInput(session, "sigma", value = 0.06)
+      updateSliderInput(session, "phi", value = 0.1)
+    }
+    if (input$preset == "SVI_hyst") {
+      updateSliderInput(session, "beta", value = 1.1)
+      updateSliderInput(session, "gamma", value = 0.7)
+      updateSliderInput(session, "theta", value = 0)
+      updateSliderInput(session, "sigma", value = 0)
+      updateSliderInput(session, "phi", value = 0)
+    }
+  })
+  
+  V0 <- 0
+  
+  init_user <- reactive({c(S = 1 - input$I0, V = V0, I = input$I0)})
+  init_rareI <- c(S = 1 - 10^-12, V = 0, I = 10^-12)
+  init_commonI <- c(S = 10^-4, V = 0, I = 1 - 10^-4)
+  
+  params <- reactive({c(beta = input$beta, 
+                        gamma = input$gamma,
+                        theta = input$theta,
+                        sigma = input$sigma,
+                        phi = input$phi)})
+  
+  time <- reactive({seq(0, input$time, by = 0.5)})
+  
+  out_userinit <- reactive({
+    data.frame(run_SVI_model(time = time(), params = params(), init = init_user()))
+  })
+  
+  out_rareI <- reactive({
+    data.frame(run_SVI_model(time = time(), params = params(), init = init_rareI))
+  })
+  
+  out_commonI <- reactive({
+    data.frame(run_SVI_model(time = time(), params = params(), init = init_commonI))
+  })
+  
+  abund_plot_userinit <- reactive({
+    plot_SVI_time(sim_df = out_userinit(), params = params())
+  })
+  
+  abund_plot_rare <- reactive({
+    plot_SVI_time(sim_df = out_rareI(), params = params(), title_text = "Infections are rare at time = 0:")
+  })
+  
+  abund_plot_common <- reactive({
+    plot_SVI_time(sim_df = out_commonI(), params = params(), title_text = "Infections are common at time = 0:")
+  })
+  
+  schematic_plot <- reactive({
+    make_rectangles(V_scale = ifelse((V0 == 0) & (input$phi == 0), 0, 1),
+                    beta_scale = ifelse(input$beta > 0, (input$beta/3)*2.1 + 0.1, 0),
+                    gamma_scale = ifelse(input$gamma > 0, (input$gamma/3)*2.1 + 0.1, 0),
+                    phi_scale = ifelse(input$phi > 0, (input$phi/0.5)*2.1 + 0.1, 0),
+                    theta_scale = ifelse(input$theta > 0, (input$theta/3)*2.1 + 0.1, 0),
+                    sigma_scale = ifelse((input$sigma > 0) & (input$beta > 0),
+                                         (input$sigma*input$beta/3)*2.15 + 0.1, 0))
+  })
+  
+  plots_to_render_SVI <- reactive({
+    wrap_plots(schematic_plot(), 
+               abund_plot_userinit(), 
+               nrow = 2, ncol = 1, byrow = FALSE)
+  })
+  
+  time_rare_common <- reactive({
+    wrap_plots(abund_plot_rare(), 
+               abund_plot_common(), 
+               nrow = 2, ncol = 1, byrow = FALSE)
+  })
+  
+  output$plot_SVI <- renderPlot({
+    plots_to_render_SVI()
+  })
+  
+  output$plot_time <- renderPlot({
+    time_rare_common()
+  })
+}
+
+# Run the application 
+shinyApp(ui = ui, server = server)
+
+```
+
+```{r SVI app, echo=FALSE, eval=FALSE}
 ## THE FORMAT SHOULD BE CHANGED to make it up to the new standard for R Shiny (i.e., with the ui and server logic as separate functions)
 
 sidebarLayout(
   sidebarPanel(
+    
+    ### Define some preset parameter combos for debugging ---
+    selectInput("preset", "Choose preset parameter combo:", 
+                  choices = list("SI disease-free" = "SI_DFE",
+                                 "SI neutral" = "SI_neutral",
+                                 "SI endemic" = "SI_endemic",
+                                 "SVI disease-free" = "SVI_DFE",
+                                 "SVI vacinated disease-free" = "SVI_vac_DFE",
+                                 "SVI neutral" = "SVI_neutral",
+                                 "SVI endemic perfect vac" = "SVI_sig0_endemic",
+                                 "SVI endemic imperfect vac" = "SVI_imperf_endemic",
+                                 "SVI hysteresis" = "SVI_hyst")),
     
     ### Ask user for parameter values ----
     
