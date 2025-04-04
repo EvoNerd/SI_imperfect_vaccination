@@ -6,9 +6,9 @@ output: html_document
 runtime: shiny
 ---
 
-# Goal
+# Introduction
 
-I am building the model presented in [Kribs-Zaleta & Velasco-Hernández 2000](https://www.sciencedirect.com/science/article/pii/S0025556400000031). I used the infectious_diseases from [the EcoEvoApps project](https://gitlab.com/ecoevoapps/ecoevoapps) as my starting point.
+Even when a vaccine is imperfect, it can still be good enough to eradicate an endemic infection. This R Shiny app presents the results from [Kribs-Zaleta & Velasco-Hernández 2000](https://www.sciencedirect.com/science/article/pii/S0025556400000031).
 
 My goal is to start playing around with an R Shiny app of a compartmental model in order to design a coherent tutorial that can help students learn. In particular, I want to see if it's possible to teach students how to make their own extensions to an existing model.
 
@@ -29,13 +29,12 @@ theme_set(ecoevoapps::theme_apps())
 ```
 
 
-# Description of the Biological Problem / Question
+# Description of the Biological Problem
 
-# Explanation of the Model
+Some infections do not confer resistance to individuals that recover from infection. However, we can still deploy interventions that can control and eradicate these infectious diseases from the population. In this case we consider an imperfect vaccine that is introduced to a population initially without any vaccinated individuals. The vaccine is "imperfect" because vaccinated individuals can still become infected, albeit at a lower rate. Another reason why the vaccine is "imperfect" is because it wanes: vaccinated individuals can move back to the susceptible compartment.
 
-## Model Assumptions
+In this model, individuals are not born nor die, the infection does not lead to mortality, and the population size is assumed to be constant.
 
-[Insert text here]
 
 ## Define variables & parameters
 
@@ -101,9 +100,6 @@ rm(pars, pars_desc, min_max, param_df)
 ```  
 
 
-## Qualitative description
-
-Let's create another version of this plot that is native to ggplot. This way it can later become an interactive part of the shiny app:
 
 ```{r schematic_diag, echo=FALSE}
 # a function to define the corners of the 3 rectangles
@@ -276,7 +272,7 @@ make_rectangles <- function(S_scale=1, # looks good: min 0.1 and max 3
 }
 
 # plot the schematic
-print(make_rectangles())
+#print(make_rectangles())
 
 # plot again without vaccinated
 #print(make_rectangles(S_scale=1, I_scale=1, V_scale=0, phi_scale=0))
@@ -537,9 +533,6 @@ get_bifurcation <- function(init, params){
 
 
 # R Shiny App
-
-Need to add the hysteresis preset.
-But first need to add the bifurcation result raw output.
 
 ```{r SVI new_app, echo=FALSE}
 
@@ -859,84 +852,4 @@ time_rare_common <- reactive({
 })
 ```
 
-Some notes about how to display this:
-- the idea of the interactive schematic plot is interesting but the problem is that lambda is  the force of infection (i.e., it is $\lambda (I)$) so it will be a function of time
-- I have another idea of using jitter plot and gganimate to give an idea of how the population is changing over time --> this can express the idea of density and probability of encounter btw different comparments.
 
-
-Here are some useful parameter combinations that I found by playing around:
-
-```{r param_combos}
-# disease-free without vaccination
-par_dfe <- c(beta = 0.27, gamma = 0.5, theta = 0.01, sigma = 0.02, phi = 0)
-
-# endemic equilibrium without vaccination
-
-
-# endemic equilibrium with vaccination
-
-
-# I think this hysteresis WITHOUT wanning (theta) ?
-#test_this <- c(beta = 3.27, gamma = 0.5, theta = 0, sigma = 0.02, phi = 0.01)
-# actually, we don't care about this.
-# the whole point of why this model is cool is bc addition of the V compartment creates a time delay. ==> There's no way to permanently make individuals resistant to the infection. But it is possible to have a stable disease-free equilibrium bc, through vaccination, it's possible to create conditions where an infected individual is unlikely to encounter any susceptible individuals.
-# if we remove the waning, then we have effectively created a resistant (R) compartment in the model.
-```
-
-Here's some code for debugging
-
-```{r testings}
-# this is a neutral system where R0 == 1 and R0_phi is undefined
-
-test_init <- c(S=0.9, V=0, I=0.1)
-test_neut <- c(beta=1.93, gamma=1.93, theta=0, sigma=0, phi=0)
-
-get_bifurcation(init = test_init, params = test_neut)
-test_sim <- data.frame(run_SVI_model(time = seq(1, 200, by=2), init = test_init, params = test_neut))
-plot_SVI_time(sim_df = test_sim, params = test_neut)
-
-init_rareI <- c(S = 1 - 10^-12, V = 0, I = 10^-12)
-get_bifurcation(init = init_rareI, params = test_neut)
-test_sim <- data.frame(run_SVI_model(time = seq(1, 200, by=2), init = init_rareI, params = test_neut))
-plot_SVI_time(sim_df = test_sim, params = test_neut)
-
-init_commonI <- c(S = 10^-4, V = 0, I = 1 - 10^-4)
-get_bifurcation(init = init_commonI, params = test_neut)
-test_sim <- data.frame(run_SVI_model(time = seq(1, 200, by=2), init = init_commonI, params = test_neut))
-plot_SVI_time(sim_df = test_sim, params = test_neut)
-```
-
-```{r testings2}
-# this is system with hysteresis
-par_hyst <- c(beta = 3.27, gamma = 0.306, theta = 0.01, sigma = 0.02, phi = 0.125)
-
-get_bifurcation(init = test_init, params = par_hyst)
-test_sim <- data.frame(run_SVI_model(time = seq(1, 200, by=2), init = test_init, params = par_hyst))
-plot_SVI_time(sim_df = test_sim, params = par_hyst)
-
-get_bifurcation(init = init_rareI, params = par_hyst)
-test_sim <- data.frame(run_SVI_model(time = seq(1, 200, by=2), init = init_rareI, params = par_hyst))
-plot_SVI_time(sim_df = test_sim, params = par_hyst)
-
-get_bifurcation(init = init_commonI, params = par_hyst)
-test_sim <- data.frame(run_SVI_model(time = seq(1, 200, by=2), init = init_commonI, params = par_hyst))
-plot_SVI_time(sim_df = test_sim, params = par_hyst)
-```
-
-
-```{to_check}
-# why don't the simulated and analytic solutions agree?
-to_check1 <- c(beta=1.77, gamma=0.65, theta=0.02, sigma=0.02, phi=0.014)
-  # here R0 and R0_phi are both > 1
-get_bifurcation(init = c(I=0.3, V=0, S=0.7), params = to_check1)
-test_sim <- data.frame(run_SVI_model(time = seq(1, 5000, by=0.1), init = c(I=0.3, V=0, S=0.7), params = to_check1))
-plot_SVI_time(sim_df = test_sim, params = to_check1)
-
-
-# slight discrepency btw simulated and analytic solutions
-to_check2 <- c(beta=2.27, gamma=0.5, theta=0.01, sigma=0.02, phi=0.002)
-```
-
-# Biological questions & answers to check user understanding
-
-One thing that I learned by playing around with the R Shiny is that it's possible to set m=0 and still have the same kinds of dynamics going on.
