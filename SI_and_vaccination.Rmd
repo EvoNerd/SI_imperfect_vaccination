@@ -2,7 +2,9 @@
 title: "SI compartmental model with imperfect vaccination"
 author: "hermina ghenu"
 date: "2025-03-26"
-output: html_document
+output: 
+  html_document:
+    code_folding: hide
 runtime: shiny
 ---
 
@@ -180,8 +182,8 @@ make_rectangles <- function(S_scale=1, # looks good: min 0.1 and max 3
                          linewidth=beta_scale) +
             # add transmission label
               geom_text(aes(x = 0.05 + rect_coords["Susceptible", "x_center"] + (rect_coords["Infected", "x_center"] - rect_coords["Susceptible", "x_center"])/2,
-                            y = rect_coords["Susceptible", "y_center"]+0.4,
-                        label = "beta"),
+                            y = rect_coords["Susceptible", "y_center"]+0.42,
+                        label = "beta %*% Infected"),
                         size = 5, parse=TRUE)
   }
   
@@ -251,7 +253,7 @@ make_rectangles <- function(S_scale=1, # looks good: min 0.1 and max 3
               # weight of arrow depends on sigma*beta parameters
                          linewidth=sigma_scale) +
               # add vaccination rate label
-              geom_text(aes(x=4.27, y=2.05, label = "sigma * beta"),
+              geom_text(aes(x=4.27, y=2.05, label = "sigma * beta %*% Infected"),
                         size = 5, parse=TRUE)
   }
   
@@ -259,7 +261,7 @@ make_rectangles <- function(S_scale=1, # looks good: min 0.1 and max 3
   if (vaccine) {
     output <- output +
               xlim(min(rect_coords$left), max(rect_coords$right)) +
-              ylim(min(rect_coords$bottom), max(c(rect_coords$top, 3.2))) +
+              ylim(min(rect_coords$bottom), max(c(rect_coords$top, 3.4))) +
               theme_void()
   } else {
     output <- output +
