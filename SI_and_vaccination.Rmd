@@ -362,7 +362,7 @@ run_SVI_model <- function(time, init, params) {
 #' @export
 plot_SVI_time <- function(sim_df, params, title_text=NA) {
 
-  # To suppress CMD Check
+  # To suppress CMD Check <-- no idea what this does, it's a bit of code inherited from EcoEvoApps
   R <- S <- E <- D <- time <- Group <- value <- NULL
   
   # check if vaccination is enabled
